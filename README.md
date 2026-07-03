@@ -1,8 +1,8 @@
-# AI Job Assistant
+# JobLens
 
 > AI-powered job discovery and analysis. Automatically fetches vacancies from HeadHunter via n8n, scores them against your profile using GPT-4o-mini, and generates personalized cover letters on demand.
 
-![Dashboard preview](docs/dashboard.png)
+
 
 ## Features
 
