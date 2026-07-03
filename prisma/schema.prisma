@@ -1,0 +1,212 @@
+// =============================================================================
+// Prisma Schema — AI Job Assistant
+// Single source of truth for the database structure
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// User Profile — one per authenticated Supabase user
+// ---------------------------------------------------------------------------
+model Profile {
+  id     String @id @default(cuid())
+  userId String @unique @map("user_id") // references auth.users(id)
+
+  name     String?
+  summary  String? // Short bio injected into AI prompts
+
+  // Skills & technology stack
+  skills       String[] // ["Python", "TypeScript", "n8n"]
+  technologies String[] // ["React", "FastAPI", "Supabase"]
+
+  // Experience — semi-structured, stored as JSON
+  // [{ role, company, years, description }]
+  experience Json @default("[]")
+
+  // Salary preferences
+  salaryMin Int?
+  salaryMax Int?
+  currency  String @default("KZT")
+
+  // Work preferences
+  workFormats String[] // ["remote", "hybrid", "office"]
+  languages   String[] // ["Russian", "English"]
+  cities      String[] // ["Almaty", "Remote"]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  settings Settings?
+  vacancies Vacancy[]
+
+  @@map("profiles")
+}
+
+// ---------------------------------------------------------------------------
+// Vacancy — raw HH data + AI analysis in one table
+// ---------------------------------------------------------------------------
+model Vacancy {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+
+  // --- Source identification ---
+  sourceId     String  @map("source_id")  // e.g. HH vacancy ID
+  sourceName   String  @map("source_name") // "headhunter" | "remoteok" | "rss"
+  url          String
+  publishedAt  DateTime? @map("published_at")
+
+  // --- Raw data from source ---
+  title          String
+  company        String
+  companyLogo    String? @map("company_logo")
+  descriptionRaw String? @map("description_raw") // Stripped plain text
+  salaryFrom     Int?    @map("salary_from")
+  salaryTo       Int?    @map("salary_to")
+  salaryCurrency String? @map("salary_currency")
+  workFormat     String? @map("work_format") // "remote" | "hybrid" | "office"
+  experienceReq  String? @map("experience_req") // "noExperience" | "between1And3" etc.
+  city           String?
+
+  // --- AI-extracted structured data (from Prompt A) ---
+  requiredSkills  String[] @map("required_skills")
+  niceToHave      String[] @map("nice_to_have")
+  techStack       String[] @map("tech_stack")
+
+  // --- AI analysis results (from Prompt A) ---
+  aiSummary      String?  @map("ai_summary")
+  matchScore     Int?     @map("match_score")    // 0–100
+  scoreBreakdown Json?    @map("score_breakdown") // { skills, tech, experience, salary, format }
+  pros           String[]
+  cons           String[]
+  missingSkills  String[] @map("missing_skills")
+  salaryFit      Boolean? @map("salary_fit")
+  recommendation String?  // "apply" | "maybe" | "skip"
+  interviewTopics String[] @map("interview_topics")
+
+  // --- Cover letter (from Prompt B, on-demand only) ---
+  coverLetter String? @map("cover_letter")
+
+  // --- User actions ---
+  status     String  @default("new") // "new" | "viewed" | "applied" | "rejected"
+  isFavorite Boolean @default(false) @map("is_favorite")
+
+  analyzedAt DateTime? @map("analyzed_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  profile  Profile   @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  llmLogs LlmLog[]
+
+  @@unique([userId, sourceId, sourceName])
+  @@index([userId])
+  @@index([matchScore])
+  @@index([publishedAt])
+  @@index([status])
+  @@index([isFavorite])
+  @@map("vacancies")
+}
+
+// ---------------------------------------------------------------------------
+// Settings — one per user, stores API keys and preferences
+// ---------------------------------------------------------------------------
+model Settings {
+  id     String @id @default(cuid())
+  userId String @unique @map("user_id")
+
+  // AI provider selection
+  aiProvider String @default("openai") @map("ai_provider") // "openai" | "gemini" | "claude"
+  aiModel    String @default("gpt-4o-mini") @map("ai_model")
+
+  // API keys (stored encrypted in production via Supabase Vault)
+  openaiKey String? @map("openai_key")
+  geminiKey String? @map("gemini_key")
+  claudeKey String? @map("claude_key")
+
+  // Telegram integration
+  telegramBotToken String? @map("telegram_bot_token")
+  telegramChatId   String? @map("telegram_chat_id")
+
+  // HeadHunter search configuration
+  hhSearchText String @default("AI engineer automation") @map("hh_search_text")
+  hhArea       String @default("160") @map("hh_area") // 160 = Almaty
+  hhPerPage    Int    @default(20) @map("hh_per_page")
+
+  // Notification threshold
+  notifyMinScore Int @default(70) @map("notify_min_score")
+
+  // Custom prompt overrides (null = use system defaults)
+  promptAnalysis    String? @map("prompt_analysis")
+  promptCoverLetter String? @map("prompt_cover_letter")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  profile Profile @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@map("settings")
+}
+
+// ---------------------------------------------------------------------------
+// LLM Logs — every AI call logged for debugging and cost tracking
+// ---------------------------------------------------------------------------
+model LlmLog {
+  id       String @id @default(cuid())
+  userId   String @map("user_id")
+  vacancyId String? @map("vacancy_id")
+
+  provider  String // "openai" | "gemini" | "claude"
+  model     String
+  operation String // "analysis" | "cover_letter"
+
+  promptVersion   String? @map("prompt_version") // git commit hash or semver
+  promptTokens    Int?    @map("prompt_tokens")
+  completionTokens Int?   @map("completion_tokens")
+  totalTokens     Int?    @map("total_tokens")
+  latencyMs       Int?    @map("latency_ms")
+
+  success   Boolean @default(true)
+  errorMsg  String? @map("error_msg")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  vacancy Vacancy? @relation(fields: [vacancyId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("llm_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Analytics Snapshot — pre-aggregated daily stats (avoids heavy realtime queries)
+// ---------------------------------------------------------------------------
+model AnalyticsSnapshot {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  date   DateTime @db.Date
+
+  totalAnalyzed  Int @default(0) @map("total_analyzed")
+  avgScore       Float? @map("avg_score")
+  highMatchCount Int    @default(0) @map("high_match_count") // score >= 80
+  midMatchCount  Int    @default(0) @map("mid_match_count")  // score 50-79
+  lowMatchCount  Int    @default(0) @map("low_match_count")  // score < 50
+
+  // Top skills frequency — { skill: count }
+  topSkills  Json @default("{}") @map("top_skills")
+  topTech    Json @default("{}") @map("top_tech")
+
+  // Work format distribution — { remote: n, hybrid: n, office: n }
+  workFormatDist Json @default("{}") @map("work_format_dist")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, date])
+  @@index([userId])
+  @@map("analytics_snapshots")
+}
